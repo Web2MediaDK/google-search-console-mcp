@@ -889,90 +889,6 @@ class TestGetSitemapDetails(unittest.IsolatedAsyncioTestCase):
 
 
 # ---------------------------------------------------------------------------
-# TestSafetyGuards
-# ---------------------------------------------------------------------------
-
-class TestSafetyGuards(unittest.IsolatedAsyncioTestCase):
-
-    async def test_add_site_blocked_by_default(self):
-        mod = _load_module({"GSC_ALLOW_DESTRUCTIVE": "false"})
-        result = await mod.add_site("https://newsite.com/")
-        self.assertIn("Safety", result)
-
-    async def test_delete_site_blocked_by_default(self):
-        mod = _load_module({"GSC_ALLOW_DESTRUCTIVE": "false"})
-        result = await mod.delete_site("https://newsite.com/")
-        self.assertIn("Safety", result)
-
-    async def test_delete_sitemap_blocked_by_default(self):
-        mod = _load_module({"GSC_ALLOW_DESTRUCTIVE": "false"})
-        result = await mod.delete_sitemap("https://example.com/", "https://example.com/sitemap.xml")
-        self.assertIn("Safety", result)
-
-    async def test_add_site_allowed_when_flag_set(self):
-        mod = _load_module({"GSC_ALLOW_DESTRUCTIVE": "true"})
-        service = _make_service()
-        service.sites().add().execute.return_value = {}
-        with patch("gsc_server.get_gsc_service", return_value=service):
-            result = await mod.add_site("https://newsite.com/")
-        self.assertNotIn("Safety", result)
-
-    async def test_delete_site_allowed_when_flag_set(self):
-        mod = _load_module({"GSC_ALLOW_DESTRUCTIVE": "true"})
-        service = _make_service()
-        service.sites().delete().execute.return_value = {}
-        with patch("gsc_server.get_gsc_service", return_value=service):
-            result = await mod.delete_site("https://example.com/")
-        self.assertNotIn("Safety", result)
-
-    async def test_delete_sitemap_allowed_when_flag_set(self):
-        mod = _load_module({"GSC_ALLOW_DESTRUCTIVE": "true"})
-        service = _make_service()
-        service.sitemaps().delete().execute.return_value = {}
-        with patch("gsc_server.get_gsc_service", return_value=service):
-            result = await mod.delete_sitemap("https://example.com/", "https://example.com/sitemap.xml")
-        self.assertNotIn("Safety", result)
-
-
-# ---------------------------------------------------------------------------
-# TestReauthenticate
-# ---------------------------------------------------------------------------
-
-class TestReauthenticate(unittest.IsolatedAsyncioTestCase):
-
-    async def test_deletes_token_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            token_path = os.path.join(tmpdir, "token.json")
-            open(token_path, "w").write('{"old": "token"}')
-            secrets_path = os.path.join(tmpdir, "secrets.json")
-            open(secrets_path, "w").write("{}")
-
-            mod = _load_module()
-
-            mock_creds = MagicMock()
-            mock_creds.to_json.return_value = '{"token": "new"}'
-
-            with patch.object(mod, "TOKEN_FILE", token_path), \
-                 patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", secrets_path), \
-                 patch("gsc_server.InstalledAppFlow") as mock_flow_cls:
-                mock_flow = MagicMock()
-                mock_flow.run_local_server.return_value = mock_creds
-                mock_flow_cls.from_client_secrets_file.return_value = mock_flow
-                result = await mod.reauthenticate()
-
-            self.assertIn("Successfully authenticated", result)
-            self.assertIn("Previous session deleted", result)
-            self.assertTrue(os.path.exists(token_path))
-
-    async def test_returns_error_when_no_secrets_file(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            mod = _load_module()
-            with patch.object(mod, "OAUTH_CLIENT_SECRETS_FILE", os.path.join(tmpdir, "no_secrets.json")):
-                result = await mod.reauthenticate()
-        self.assertIn("Error", result)
-
-
-# ---------------------------------------------------------------------------
 # TestStdoutClean
 # ---------------------------------------------------------------------------
 
@@ -1003,3 +919,33 @@ class TestStdoutClean(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+
+# ---------------------------------------------------------------------------
+# TestReadOnly: guards that nothing can change Search Console data
+# ---------------------------------------------------------------------------
+
+class TestReadOnly(unittest.IsolatedAsyncioTestCase):
+
+    EXPECTED_TOOLS = {
+        "get_capabilities", "list_properties", "get_site_details",
+        "get_search_analytics", "get_performance_overview", "compare_search_periods",
+        "get_search_by_page_query", "get_advanced_search_analytics",
+        "inspect_url_enhanced", "batch_url_inspection", "check_indexing_issues",
+        "get_sitemaps", "list_sitemaps_enhanced", "get_sitemap_details",
+    }
+
+    def test_scope_is_read_only(self):
+        mod = _load_module()
+        self.assertEqual(mod.SCOPES, ["https://www.googleapis.com/auth/webmasters.readonly"])
+
+    async def test_only_read_tools_registered(self):
+        mod = _load_module()
+        names = {t.name for t in await mod.mcp.list_tools()}
+        self.assertEqual(names, self.EXPECTED_TOOLS)
+
+    def test_no_write_api_calls_in_source(self):
+        src = open(os.path.join(os.path.dirname(__file__), "gsc_server.py")).read()
+        for call in ("sitemaps().submit", "sitemaps().delete", "sites().add", "sites().delete"):
+            self.assertNotIn(call, src)
