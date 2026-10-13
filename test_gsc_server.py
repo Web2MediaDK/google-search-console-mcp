@@ -946,6 +946,6 @@ class TestReadOnly(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(names, self.EXPECTED_TOOLS)
 
     def test_no_write_api_calls_in_source(self):
-        src = open(os.path.join(os.path.dirname(__file__), "gsc_server.py")).read()
+        src = open(os.path.join(os.path.dirname(__file__), "gsc_server.py"), encoding="utf-8").read()
         for call in ("sitemaps().submit", "sitemaps().delete", "sites().add", "sites().delete"):
             self.assertNotIn(call, src)
