@@ -67,8 +67,8 @@ class Settings:
             raise RuntimeError("Missing environment variables: " + ", ".join(missing))
         return cls(
             base_url=os.environ["PUBLIC_BASE_URL"].rstrip("/"),
-            google_client_id=os.environ["GOOGLE_CLIENT_ID"],
-            google_client_secret=os.environ["GOOGLE_CLIENT_SECRET"],
+            google_client_id=os.environ["GOOGLE_CLIENT_ID"].strip(),
+            google_client_secret=os.environ["GOOGLE_CLIENT_SECRET"].strip(),
             allowed_domain=os.environ["ALLOWED_DOMAIN"].lower().lstrip("@"),
         )
 
