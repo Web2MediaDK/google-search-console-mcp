@@ -137,3 +137,105 @@ def test_refresh_rotates_and_old_token_dies(client):
     assert rpc(client, new.json()["access_token"], "tools/list").status_code == 200
     again = client.post("/token", data={"grant_type": "refresh_token", "refresh_token": refresh, "client_id": client_id})
     assert again.status_code == 400
+
+
+def test_google_authorization_requests_offline_access(client):
+    client_id = register(client)
+    _, challenge = pkce()
+    state = start_login(client, client_id, challenge)
+    response = client.get("/authorize", params={"response_type": "code", "client_id": client_id, "redirect_uri": REDIRECT, "code_challenge": challenge, "code_challenge_method": "S256", "state": "xyz", "scope": "mcp"}, follow_redirects=False)
+    query = urllib.parse.parse_qs(urllib.parse.urlparse(response.headers["location"]).query)
+    assert query["access_type"] == ["offline"]
+    assert query["prompt"] == ["consent"]
+    # State was already created by the first request and remains a one-time entry.
+    assert state
+
+
+def test_google_refresh_token_is_saved_after_verified_company_login():
+    from spike_server import GoogleAuthResult
+
+    class Store:
+        def __init__(self):
+            self.tokens = {}
+        def save(self, email, token):
+            self.tokens[email] = token
+        def get(self, email):
+            return self.tokens.get(email)
+
+    store = Store()
+
+    async def exchange(settings, code):
+        return GoogleAuthResult(claims=GOOD, refresh_token="google-refresh-for-anna")
+
+    mcp, provider = create_server(SETTINGS, exchange, token_store=store)
+    with TestClient(mcp.streamable_http_app(), base_url="http://localhost:8080") as c:
+        client_id = register(c)
+        _, challenge = pkce()
+        state = start_login(c, client_id, challenge)
+        callback = c.get("/oauth/google/callback", params={"state": state, "code": "google-code"}, follow_redirects=False)
+        assert callback.status_code == 302
+    assert store.get("anna@example.com") == "google-refresh-for-anna"
+
+
+def test_first_login_without_google_refresh_token_is_rejected():
+    from spike_server import GoogleAuthResult
+
+    class EmptyStore:
+        def save(self, email, token):
+            raise AssertionError("No token should be saved")
+        def get(self, email):
+            return None
+
+    async def exchange(settings, code):
+        return GoogleAuthResult(claims=GOOD, refresh_token=None)
+
+    mcp, _ = create_server(SETTINGS, exchange, token_store=EmptyStore())
+    with TestClient(mcp.streamable_http_app(), base_url="http://localhost:8080") as c:
+        client_id = register(c)
+        _, challenge = pkce()
+        state = start_login(c, client_id, challenge)
+        callback = c.get("/oauth/google/callback", params={"state": state, "code": "google-code"}, follow_redirects=False)
+        assert callback.status_code == 403
+        assert "offline access" in callback.text
+
+
+def test_oauth_state_survives_provider_recreation():
+    """A new server object can finish login and validate the issued access token."""
+    from spike_server import GoogleAuthResult
+
+    class DurableStore:
+        def __init__(self):
+            self.tokens = {}
+            self.state = {}
+        def save(self, email, token):
+            self.tokens[email] = token
+        def get(self, email):
+            return self.tokens.get(email)
+        def put_state(self, collection, key, value):
+            self.state[(collection, key)] = value
+        def get_state(self, collection, key):
+            return self.state.get((collection, key))
+        def pop_state(self, collection, key):
+            return self.state.pop((collection, key), None)
+        def delete_state(self, collection, key):
+            self.state.pop((collection, key), None)
+
+    async def exchange(settings, code):
+        return GoogleAuthResult(GOOD, "anna-google-refresh")
+
+    store = DurableStore()
+    mcp1, _ = create_server(SETTINGS, exchange, token_store=store)
+    with TestClient(mcp1.streamable_http_app(), base_url="http://localhost:8080") as c1:
+        client_id = register(c1)
+        verifier, challenge = pkce()
+        state = start_login(c1, client_id, challenge)
+        callback = c1.get("/oauth/google/callback", params={"state": state, "code": "google-code"}, follow_redirects=False)
+        code = urllib.parse.parse_qs(urllib.parse.urlparse(callback.headers["location"]).query)["code"][0]
+
+    # Simulate a Cloud Run restart between Google's callback and ChatGPT's token exchange.
+    mcp2, _ = create_server(SETTINGS, exchange, token_store=store)
+    with TestClient(mcp2.streamable_http_app(), base_url="http://localhost:8080") as c2:
+        token_response = c2.post("/token", data={"grant_type": "authorization_code", "code": code, "redirect_uri": REDIRECT, "client_id": client_id, "code_verifier": verifier})
+        assert token_response.status_code == 200, token_response.text
+        result = rpc(c2, token_response.json()["access_token"], "tools/call", {"name": "whoami", "arguments": {}})
+        assert "anna@example.com" in result.json()["result"]["content"][0]["text"]
