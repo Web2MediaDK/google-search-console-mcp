@@ -40,6 +40,17 @@ from mcp.server.fastmcp import FastMCP
 
 mcp = FastMCP("gsc-server")
 
+# The hosted HTTP entry point injects a per-request GSC service factory after
+# authenticating the MCP bearer token. Local stdio users keep the existing
+# credential-file behavior.
+_REMOTE_SERVICE_FACTORY = None
+
+
+def configure_remote_service_factory(factory):
+    """Use ``factory()`` for GSC calls in the authenticated hosted server."""
+    global _REMOTE_SERVICE_FACTORY
+    _REMOTE_SERVICE_FACTORY = factory
+
 def _expand_path(path: Optional[str]) -> Optional[str]:
     """Expand ``~`` and environment variables in a path, returning None for empty input.
 
@@ -107,6 +118,9 @@ def get_gsc_service():
     Returns an authorized Search Console service object.
     First tries OAuth authentication, then falls back to service account.
     """
+    if _REMOTE_SERVICE_FACTORY is not None:
+        return _REMOTE_SERVICE_FACTORY()
+
     # Fail-fast if credential env vars are set but point to files that don't exist.
     # Without this, a typo'd or uvx-incompatible path would silently fall through to
     # SCRIPT_DIR/cwd fallbacks (which don't work under uvx) and emit a misleading
