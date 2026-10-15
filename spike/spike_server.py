@@ -135,6 +135,14 @@ class GoogleBackedProvider:
         claims = await self._exchange(self.s, google_code)
         email = str(claims.get("email", "")).lower()
         domain = self.s.allowed_domain
+        log.warning(
+            "Google identity check: email_domain=%r hd=%r email_verified=%r allowed_domain=%r",
+            email.rsplit("@", 1)[-1] if "@" in email else "",
+            str(claims.get("hd", "")).lower(),
+            claims.get("email_verified"),
+            domain,
+        )
+
         if not (claims.get("email_verified") and claims.get("hd", "").lower() == domain and email.endswith("@" + domain)):
             log.warning("Refused sign-in for a non-company account")
             raise LoginError(f"Only {domain} accounts can sign in.")
