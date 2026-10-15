@@ -351,7 +351,7 @@ def create_server(
         json_response=True,
     )
 
-    @mcp.custom_route("/healthz", methods=["GET"])
+    @mcp.custom_route("/health", methods=["GET"])
     async def healthz(request: Request) -> Response:
         return PlainTextResponse("ok")
 
